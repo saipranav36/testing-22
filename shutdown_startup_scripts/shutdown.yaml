@@ -1,0 +1,186 @@
+---
+- hosts: controller
+  gather_facts: no
+  become: yes
+  tasks:
+  - name: Check if ceph is enabled
+    shell: python /usr/share/cbis/overcloud/postdeploy/scripts/ceph_config_utility_execute.py -c
+    register: is_ceph_enabled
+    failed_when: false
+    changed_when: False
+    ignore_errors: yes
+    run_once: true
+
+- hosts: undercloud
+  gather_facts: no
+  tasks:
+  - name: Stop all running VMs
+    shell: |
+      source /home/stack/overcloudrc
+      for vm in $(openstack server list --all-projects --column ID -f value); do
+          result=$(openstack server show $vm | grep status | cut -d'|' -f3);
+          result=$(echo $result | cut -d' ' -f1);
+          if [[ $result == 'ACTIVE' ]]; then
+            openstack server stop $vm;
+          fi
+      done
+
+  - name: Poll for VMs status
+    shell: |
+      source /home/stack/overcloudrc
+      server_list=$(openstack server list --all-projects --column Status -f value)
+      all_vms_desired_state=true
+      for vm_state in $server_list; do
+        if [[ $vm_state != 'SHUTOFF' && $vm_state != 'ERROR' ]]; then
+          all_vms_desired_state=false
+          break
+        fi
+      done
+      echo $all_vms_desired_state
+    register: all_vms_shutoff
+    retries: 10
+    delay: 20
+    until: all_vms_shutoff.stdout.find("true") == 0
+
+  - name: Validate all VMs are shutoff
+    fail:
+      msg: 'Some VMs are not in SHUTOFF state'
+    when: 'all_vms_shutoff.stdout != "true"'
+
+  - name: Put all computes services in disabled mode
+    shell: |
+      source /home/stack/overcloudrc
+      for comp in $(openstack hypervisor list | awk '/compute/ {print $4}');
+        do
+          openstack compute service set --disable --disable-reason "Disabled before shutdown $(date)" ${comp} nova-compute; \
+        done
+
+  - name: Poll for compute services status
+    shell: |
+        source /home/stack/overcloudrc
+                compute_list=$(openstack hypervisor list | awk '/compute/ {print $4}')
+                all_services_desired_state=true
+                for compute in $compute_list; do
+                  service_state=$(openstack compute service list | grep $compute | awk '{print $10}')
+                  if [[ $service_state != 'disabled' ]]; then
+                          all_services_desired_state=false
+                          break
+                  fi
+                done
+                echo $all_services_desired_state
+    register: all_services_disabled
+    retries: 10
+    delay: 20
+    until: all_services_disabled.rc != 1
+
+  - name: Validate all compute services are disabled
+    fail:
+      msg: 'Some compute services are not in disabled state'
+    when: 'all_services_disabled.stdout != "true"'
+
+- hosts: compute, compute_nodes,
+         OvsCompute, ovs_compute_nodes,
+         single_nic_ovs_compute_nodes, triple_nic_ovs_compute_nodes,
+         two_nic_ovs_compute_nodes, three_nic_ovs_compute_nodes,
+         DpdkPerformanceCompute, dpdk_performance_compute_nodes,
+         triple_nic_dpdk_performance_compute_nodes,
+         two_nic_dpdk_performance_compute_nodes, three_nic_dpdk_performance_compute_nodes,
+         SriovPerformanceCompute, sriov_performance_compute_nodes,
+         triple_nic_sriov_performance_compute_nodes,
+         two_nic_sriov_performance_compute_nodes, three_nic_sriov_performance_compute_nodes,
+         Storage, storage, storage_nodes,
+         one_nic_storage_nodes, two_nic_storage_nodes, cephstorage, CephStorage, Monitoring
+  gather_facts: no
+  become: yes
+  tasks:
+  - name: Stop and disable OpenStack containers on computes / storage nodes
+    shell: |
+          ceph osd set noout
+          systemctl stop ceph-osd.target
+          systemctl stop ceph-osd@*
+          for i in $(docker ps --filter name=ceph-osd --quiet ) ;do docker stop $i ; done
+          timeout -s 9 60 docker stop $(docker ps -q) || true
+    ignore_errors: yes
+    when: "hostvars[groups['controller'][0]]['is_ceph_enabled']['stdout'] == 'True'"
+
+- hosts: Controller, controller_nodes, controller,
+         single_nic_controller_nodes, triple_nic_controller_nodes,
+         two_nic_controller_nodes, three_nic_controller_nodes,
+         Storage, storage, storage_nodes,
+         one_nic_storage_nodes, two_nic_storage_nodes, cephstorage, CephStorage
+  gather_facts: no
+  become: yes
+  tasks:
+  - name: Disable rabbitmq-bundle pcs resource on one of the controllers
+    shell: |
+          pcs resource disable rabbitmq-bundle
+          sleep 60
+    run_once: true
+
+  - name: Set maintenance mode on one of the controllers
+    shell: pcs property set maintenance-mode=true
+    run_once: true
+
+  - name: Stop all OpenStack containers
+    shell: |
+          docker exec $(docker ps --filter name=galera-bundle --quiet) mysqladmin -u root shutdown
+          systemctl stop ceph-mgr@*
+          systemctl stop ceph-mon@*
+          systemctl stop ceph-mds@*
+        # systemctl stop ceph-radosgw@*
+          sleep 20
+          timeout -s 9 60 docker stop $(docker ps -q) || true
+          systemctl stop pacemaker.service && systemctl disable pacemaker.service
+          pcs cluster stop --force
+    when: "hostvars[groups['controller'][0]]['is_ceph_enabled']['stdout'] == 'True'"
+
+
+
+- hosts: Controller, controller_nodes, controller,
+         single_nic_controller_nodes, triple_nic_controller_nodes,
+         two_nic_controller_nodes, three_nic_controller_nodes,
+         compute, compute_nodes,
+         OvsCompute, ovs_compute_nodes,
+         single_nic_ovs_compute_nodes, triple_nic_ovs_compute_nodes,
+         two_nic_ovs_compute_nodes, three_nic_ovs_compute_nodes,
+         DpdkPerformanceCompute, dpdk_performance_compute_nodes,
+         triple_nic_dpdk_performance_compute_nodes,
+         two_nic_dpdk_performance_compute_nodes, three_nic_dpdk_performance_compute_nodes,
+         SriovPerformanceCompute, sriov_performance_compute_nodes,
+         triple_nic_sriov_performance_compute_nodes,
+         two_nic_sriov_performance_compute_nodes, three_nic_sriov_performance_compute_nodes,
+                 Storage, storage, storage_nodes,
+         one_nic_storage_nodes, two_nic_storage_nodes, cephstorage, CephStorage, Monitoring
+  gather_facts: no
+  become: yes
+  tasks:
+  - name: poweroff all overcloud nodes
+    shell: shutdown +1
+    ignore_errors: yes
+
+- hosts: undercloud
+  gather_facts: no
+  tasks:
+  - name: vaildate all nodes are powered off  
+    shell: |
+        source /home/stack/stackrc
+        all_controllers_desired_state=true
+        controllers_states=$(openstack baremetal node list --fields power_state -f value  | awk '{print $2 }')
+                for state in $controllers_states; do
+                  if [[ $state != 'off' ]]; then
+                        all_controllers_desired_state=false
+                        break
+                  fi
+                done
+        echo $all_controllers_desired_state
+        source /home/stack/stackrc
+        controller_list=$(openstack baremetal node list  --fields uuid -f value)
+        for server_uuid in $controller_list; do
+            openstack baremetal node power off $server_uuid
+        done
+
+    register: all_controllers_on
+    retries: 10
+    delay: 20
+    until: all_controllers_on.stdout.find("true") == 0
+

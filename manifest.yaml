@@ -1,0 +1,7 @@
+name:  graceful_shutdown_startup
+display: Graceful Startup and Shutdown
+description: Run Auto  Graceful Startup and Shutdown v1.4 
+logUrl: log/graceful_shutdown_startup.log
+version: [19.1]
+
+

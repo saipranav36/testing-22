@@ -1,0 +1,84 @@
+---
+- hosts: Controller, controller_nodes, controller,
+         single_nic_controller_nodes, triple_nic_controller_nodes,
+         two_nic_controller_nodes, three_nic_controller_nodes
+  gather_facts: no
+  become: yes
+  tasks:
+  - name: Check if ceph is enabled
+    shell: python /usr/share/cbis/overcloud/postdeploy/scripts/ceph_config_utility_execute.py -c
+    register: is_ceph_enabled
+    failed_when: false
+    changed_when: False
+    ignore_errors: yes
+    run_once: true
+
+  - name: Check Ceph health
+    shell: ceph health
+    register: ceph_health
+    retries: 10
+    delay: 60
+    until: ceph_health.stdout.find("HEALTH_OK") == 0
+    when: is_ceph_enabled.stdout == 'True'
+
+  - name: Validate ceph health
+    fail:
+      msg: 'Ceph health is not "HEALTH_OK"'
+    when: is_ceph_enabled.stdout == 'True' and "HEALTH_OK" not in ceph_health.stdout
+
+  - name: Check MariaDB Galera cluster is synced
+    shell: docker exec $(docker ps --filter name=galera-bundle --quiet) clustercheck
+    register: galera_cluster_sync
+
+  - name: Validate MariaDB Galera cluster is synced
+    fail:
+      msg: 'Galera cluster node is not synced'
+    when: '"is synced" not in galera_cluster_sync.stdout'
+
+  - name: Check Pacemaker services are started
+    shell: python /usr/share/cbis/utils/files/validate_pcs.py
+    register: pcs_services_running
+    changed_when: False
+    ignore_errors: yes
+    run_once: true
+
+  - name: Validate Pacemaker services are started
+    run_once: true
+    fail:
+      msg: 'Some Pacemaker services are in an unhealthy state'
+    when: 'pcs_services_running.rc != 0'
+
+
+- hosts: Controller, controller_nodes, controller,
+         single_nic_controller_nodes, triple_nic_controller_nodes,
+         two_nic_controller_nodes, three_nic_controller_nodes,
+         compute, compute_nodes,
+         OvsCompute, ovs_compute_nodes,
+         single_nic_ovs_compute_nodes, triple_nic_ovs_compute_nodes,
+         two_nic_ovs_compute_nodes, three_nic_ovs_compute_nodes,
+         DpdkPerformanceCompute, dpdk_performance_compute_nodes,
+         triple_nic_dpdk_performance_compute_nodes,
+         two_nic_dpdk_performance_compute_nodes, three_nic_dpdk_performance_compute_nodes,
+         SriovPerformanceCompute, sriov_performance_compute_nodes,
+         triple_nic_sriov_performance_compute_nodes,
+         two_nic_sriov_performance_compute_nodes, three_nic_sriov_performance_compute_nodes, Storage, storage, storage_nodes,
+         one_nic_storage_nodes, two_nic_storage_nodes, cephstorage, CephStorage, Monitoring
+  gather_facts: no
+  become: yes
+  tasks:
+  - name: copy system clock to h/w clock
+    shell: hwclock --systohc
+
+  - name: checked ntps synchronization
+    shell: ntpstat
+    register: ntp_validate
+
+  - name: Validate ntps synchronization
+    fail:
+      msg: 'ntp is not synchronized correctly '
+    when: 'ntp_validate.stdout.find("synchronised") != 0 '
+
+
+
+
+

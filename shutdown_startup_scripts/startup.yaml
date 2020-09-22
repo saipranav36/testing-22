@@ -1,0 +1,343 @@
+---
+- hosts: undercloud
+  become: yes
+  gather_facts: no
+  tasks:
+  - name: Power on controllers
+    shell: |
+        source /home/stack/stackrc
+        controller_list=$(openstack baremetal node list --resource-class baremetal.Controller --fields uuid -f value)
+        for server_uuid in $controller_list; do
+            openstack baremetal node power on $server_uuid
+        done
+        source /home/stack/stackrc
+        all_controllers_desired_state=true
+        controllers_states=$(openstack baremetal node list --resource-class baremetal.Controller --fields power_state -f value  | awk '{print $2 }')
+                for state in $controllers_states; do
+                  if [[ $state != 'on' ]]; then
+                        all_controllers_desired_state=false
+                        break
+                  fi
+                done
+        echo $all_controllers_desired_state
+
+    register: all_controllers_on
+    retries: 10
+    delay: 20
+    until: all_controllers_on.stdout.find("true") == 0
+
+  - name: Validate controllers are on
+    fail:
+      msg: 'Some Controller nodes are not powered on currectly'
+    when: 'all_controllers_on.stdout != "true"'
+
+  - name: check if setup is nuage
+    shell: |
+      nuage=$(cat /home/stack/user_config.yaml | grep "nuage:"  | grep "true")
+      echo $nuage
+    register: nuage
+
+- hosts: controller, controller_nodes, controller,
+         single_nic_controller_nodes, triple_nic_controller_nodes,
+         two_nic_controller_nodes, three_nic_controller_nodes
+  gather_facts: no
+  become: yes
+  tasks:
+  - name: Wait 1800 seconds for controllers connection to become reachable/usable
+    wait_for_connection:
+      timeout: 1800
+
+  - name: start pcs controller services
+    shell: |
+        pcs cluster start
+        sleep 60
+        systemctl enable pacemaker.service
+
+  - name: unset maintenance mode
+    shell: |
+        pcs property unset maintenance-mode
+        sleep 90
+    run_once: true
+
+  - name: Check MariaDB Galera cluster is synced
+    shell: docker exec $(docker ps --filter name=galera-bundle --quiet) clustercheck
+    register: galera_cluster_sync
+    ignore_errors: yes
+
+
+  - name: fix Maria DB by stop cluster and start
+    shell: |
+        pcs cluster stop
+        sleep 90
+        pcs cluster start
+        sleep 120
+        systemctl enable pacemaker.service
+    when : '"is synced" not in galera_cluster_sync.stdout'
+
+  - name: Enable rabbitmq-bundle pcs resource
+    shell: |
+        pcs resource enable rabbitmq-bundle
+        sleep 60
+    run_once: true
+
+  - name: Check MariaDB Galera cluster is synced
+    shell: docker exec $(docker ps --filter name=galera-bundle --quiet) clustercheck
+    register: galera_cluster_sync
+    retries: 10
+    delay: 60
+    until: galera_cluster_sync.stdout.find("is synced") != -1
+
+  - name: cleanup pacemaker resources history
+    shell: pcs resource cleanup
+    ignore_errors: yes
+    run_once: true
+
+  - name: Check Pacemaker services are started
+    shell: python /usr/share/cbis/utils/files/validate_pcs.py
+    register: pcs_services_running
+    failed_when: false
+    ignore_errors: yes
+    run_once: true
+
+  - name: Check if ceph is enabled
+    shell: python /usr/share/cbis/overcloud/postdeploy/scripts/ceph_config_utility_execute.py -c
+    register: is_ceph_enabled
+    failed_when: false
+    changed_when: False
+    ignore_errors: yes
+    run_once: true
+
+- hosts: undercloud
+  gather_facts: no
+  tasks:
+  - name: Power on Compute/Storage/Monitoring nodes.
+    shell: |
+        source /home/stack/stackrc
+        resource_classes=$(openstack baremetal node list --fields resource_class -f value | grep -i "compute\|storage\|monitoring" | sort | uniq)
+        server_list=''
+        for class in $resource_classes; do
+            server_list+=" $(openstack baremetal node list --resource-class $class --fields uuid -f value)"
+        done
+        for server_uuid in $server_list; do
+            openstack baremetal node power on $server_uuid
+        done
+
+  - name: Wait for Compute/Storage/Monitoring nodes to power on
+    shell: |
+        source /home/stack/stackrc
+        resource_classes=$(openstack baremetal node list --fields resource_class -f value | grep -i "compute\|storage\|monitoring" | sort | uniq)
+                all_nodes_desired_state=true
+        power_states=''
+        for class in $resource_classes; do
+              power_states+=" $(openstack baremetal node list --resource-class $class --fields power_state -f value | awk '{print $2}')"
+        done
+            for state in $power_states; do
+          if [[ $state != 'on' ]]; then
+              all_nodes_desired_state=false
+              break
+          fi
+        done
+        echo $all_nodes_desired_state
+    register: all_nodes_on
+    retries: 10
+    delay: 20
+    until: all_nodes_on.stdout.find("true") == 0
+
+  - name: Validate nodes are on
+    fail:
+      msg: 'Some compute or storage nodes are not powered on currectly'
+    when: 'all_nodes_on.stdout != "true"'
+
+- hosts: compute, compute_nodes,
+         OvsCompute, ovs_compute_nodes,
+         single_nic_ovs_compute_nodes, triple_nic_ovs_compute_nodes,
+         two_nic_ovs_compute_nodes, three_nic_ovs_compute_nodes,
+         DpdkPerformanceCompute, dpdk_performance_compute_nodes,
+         triple_nic_dpdk_performance_compute_nodes,
+         two_nic_dpdk_performance_compute_nodes, three_nic_dpdk_performance_compute_nodes,
+         SriovPerformanceCompute, sriov_performance_compute_nodes,
+         triple_nic_sriov_performance_compute_nodes,
+         two_nic_sriov_performance_compute_nodes, three_nic_sriov_performance_compute_nodes,
+         Storage, storage, storage_nodes,
+         one_nic_storage_nodes, two_nic_storage_nodes, cephstorage, CephStorage, Monitoring
+  gather_facts: no
+  become: yes
+  tasks:
+  - name: Wait 1800 seconds for computes/storage/monitoring connection to become reachable/usable
+    wait_for_connection:
+          timeout: 1800
+
+- hosts: compute, compute_nodes,
+         OvsCompute, ovs_compute_nodes,
+         single_nic_ovs_compute_nodes, triple_nic_ovs_compute_nodes,
+         two_nic_ovs_compute_nodes, three_nic_ovs_compute_nodes,
+         DpdkPerformanceCompute, dpdk_performance_compute_nodes,
+         triple_nic_dpdk_performance_compute_nodes,
+         two_nic_dpdk_performance_compute_nodes, three_nic_dpdk_performance_compute_nodes,
+         SriovPerformanceCompute, sriov_performance_compute_nodes,
+         triple_nic_sriov_performance_compute_nodes,
+         two_nic_sriov_performance_compute_nodes, three_nic_sriov_performance_compute_nodes,
+         Storage, storage, storage_nodes,
+         one_nic_storage_nodes, two_nic_storage_nodes, cephstorage, CephStorage
+  gather_facts: no
+  become: yes
+  tasks:
+  - name: Bring all ceph OSDs
+    shell: docker ps -a | grep ceph-osd-prepare | awk -F- '{print $NF}' | xargs -i systemctl start ceph-osd@{}
+    when: "hostvars[groups['controller'][0]]['is_ceph_enabled']['stdout'] == 'True'"
+
+  - name: Unset noout from the Ceph OSDs
+    shell: ceph osd unset noout
+    when: "hostvars[groups['controller'][0]]['is_ceph_enabled']['stdout'] == 'True'"
+
+- hosts: compute, compute_nodes,
+         OvsCompute, ovs_compute_nodes,
+         single_nic_ovs_compute_nodes, triple_nic_ovs_compute_nodes,
+         two_nic_ovs_compute_nodes, three_nic_ovs_compute_nodes,
+         DpdkPerformanceCompute, dpdk_performance_compute_nodes,
+         triple_nic_dpdk_performance_compute_nodes,
+         two_nic_dpdk_performance_compute_nodes, three_nic_dpdk_performance_compute_nodes,
+         SriovPerformanceCompute, sriov_performance_compute_nodes,
+         triple_nic_sriov_performance_compute_nodes,
+         two_nic_sriov_performance_compute_nodes, three_nic_sriov_performance_compute_nodes
+  gather_facts: no
+  become: yes
+  tasks:
+  - name: Check computes containers are running
+    shell: |
+        dockers=$(docker ps)
+        compute_services_running=true
+        nova_compute=''
+        nova_libvirt=''
+        nova_compute=$(echo $dockers | grep nova-compute)
+        nova_libvirt=$(echo $dockers | grep nova-libvirt)
+        if [[ $nova_compute = '' || $nova_libvirt = '' ]]; then
+          compute_services_running=false
+        fi
+        echo $compute_services_running
+    register: compute_services_running
+    retries: 10
+    delay: 60
+    until: compute_services_running.stdout.find("true") == 0
+
+  - name: Validate computes containers are running
+    fail:
+      msg: 'Some compute containers (nova-compute, nova-libvirt, or neutron) are not started'
+    when: 'compute_services_running.stdout != "true"'
+  - name: check if neutron agent containers running for un nuage setups
+    shell : |
+          dockers=$(docker ps)
+          neutron=$(echo $dockers | grep neutron)
+          neutron_service=true
+          if [[ "{{ hostvars[groups['undercloud'][0]]['nuage']['stdout'] }}" == "" ]];then
+                   if [[ $neutron == '' ]]; then
+                          neutron_service=false
+
+          fi
+          fi
+          echo $neutron_service
+    register: neutron_service
+    retries: 10
+    delay: 60
+    until: neutron_service.stdout.find("true") == 0
+
+  - name: Validate computes neutron container running
+    fail:
+        msg: 'Some compute container neutron is not started'
+    when: 'neutron_service.stdout != "true"'
+      
+- hosts: controller, controller_nodes, controller,
+         single_nic_controller_nodes, triple_nic_controller_nodes,
+         two_nic_controller_nodes, three_nic_controller_nodes
+  gather_facts: no
+  become: yes
+  tasks:
+  - name: Check Ceph health
+    shell: ceph health
+    register: ceph_health
+    retries: 10
+    delay: 60
+    until: ceph_health.stdout.find("HEALTH_OK") == 0
+    when: "hostvars[groups['controller'][0]]['is_ceph_enabled']['stdout'] == 'True'"
+
+  - name: Validate ceph health
+    fail:
+       msg: 'Ceph health is not "HEALTH_OK"'
+    when: hostvars[groups['controller'][0]]['is_ceph_enabled']['stdout'] == 'True' and "HEALTH_OK" not in ceph_health.stdout
+
+- hosts: undercloud
+  gather_facts: no
+  tasks:
+  - name: Enable nova service
+    shell: |
+        source /home/stack/overcloudrc
+        for comp in $(openstack hypervisor list | awk '/compute/ {print $4}');
+        do \
+          openstack compute service set --enable ${comp} nova-compute ; \
+        done
+
+  - name: Poll for compute services status
+    shell: |
+        source /home/stack/overcloudrc
+        compute_list=$(openstack hypervisor list | awk '/compute/ {print $4}')
+        all_services_desired_state=true
+        for compute in $compute_list; do
+            service_state=$(openstack compute service list | grep $compute | awk '{print $10}')
+            if [[ $service_state != 'enabled' ]]; then
+                all_services_desired_state=false
+                break
+            fi
+        done
+        echo $all_services_desired_state
+    register: all_services_enabled
+    retries: 10
+    delay: 20
+    until: all_services_enabled.stdout.find("true") == 0
+
+- hosts: compute, compute_nodes,
+         OvsCompute, ovs_compute_nodes,
+         single_nic_ovs_compute_nodes, triple_nic_ovs_compute_nodes,
+         two_nic_ovs_compute_nodes, three_nic_ovs_compute_nodes,
+         DpdkPerformanceCompute, dpdk_performance_compute_nodes,
+         triple_nic_dpdk_performance_compute_nodes,
+         two_nic_dpdk_performance_compute_nodes, three_nic_dpdk_performance_compute_nodes,
+         SriovPerformanceCompute, sriov_performance_compute_nodes,
+         triple_nic_sriov_performance_compute_nodes,
+         two_nic_sriov_performance_compute_nodes, three_nic_sriov_performance_compute_nodes
+  gather_facts: no
+  become: yes
+  tasks:
+  - name: restart nova compute if service is disabled
+    shell: |
+        docker restart nova_compute
+        sleep 90
+    when: "hostvars[groups['undercloud'][0]]['all_services_enabled']['stdout'] != 'true'"
+
+- hosts: undercloud
+  gather_facts: no
+  tasks:
+  - name: Poll for compute services status
+    shell: |
+        source /home/stack/overcloudrc
+        compute_list=$(openstack hypervisor list | awk '/compute/ {print $4}')
+        all_services_desired_state=true
+        for compute in $compute_list; do
+          service_state=$(openstack compute service list | grep $compute | awk '{print $10}')
+          for state in $service_state; do
+            if [[ $state != 'enabled' ]]; then
+              all_services_desired_state=false
+              break
+            fi
+          done
+        done
+        echo $all_services_desired_state
+    register: all_services_enabled_again
+    retries: 10
+    delay: 20
+    until: "all_services_enabled_again.stdout == 'true'"
+
+  - name: Validate all compute services are enabled
+    fail:
+      msg: 'Some compute services are not in enabled state'
+    when: 'all_services_enabled_again.stdout != "true"'
+

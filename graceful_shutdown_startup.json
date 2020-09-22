@@ -1,0 +1,104 @@
+
+{
+  "name": "graceful_shutdown_startup",
+  "display": "CBIS Graceful Shutdown and Startup",
+  "description": "CBIS Graceful Shutdown and Startup",
+  "sections": [
+    {
+      "name": "graceful_shutdown_startup",
+      "display": "CBIS Shutdown and Startup",
+      "subSections": [
+        {
+          "name": "subsection_1",
+          "display": "Shutdown and Startup",
+          "fields": [
+
+            {
+              "type": "boolean",
+              "name": "prerequisite",
+              "display": "Prerequisites for Graceful Shutdown and Startup",
+              "help": "Check setup status, if you start shutdown without it will be Auto enabled  ",
+              "default": true,
+              "showIf": {
+                        "parentName": "startup",
+                        "parentValue": false,
+                        "parentName": "shutdown",
+                        "parentValue": true,
+                        "parentName": "startup",
+                        "parentValue": false
+
+              }
+
+
+            },
+            {
+              "type": "boolean",
+              "name": "shutdown",
+              "display": "CBIS Shutdown Procedure",
+              "help": "CBIS Graceful Shutdown",
+              "default": false
+            },
+            {
+              "type": "boolean",
+              "name": "startup",
+              "display": "CBIS Startup Procedure",
+              "help": "CBIS Graceful Startup",
+              "default": false
+            }
+
+          ]
+
+    }
+
+      ]
+    },
+    {
+      "name": "deploy",
+      "type": "deploy",
+      "display": "Deploy",
+      "subSections": [
+        {
+          "name": "validation",
+          "type": "validation",
+          "display": "Fields Completion",
+          "exclude": []
+        },
+        {
+          "name": "actions",
+          "type": "actions",
+          "buttons": [
+            {
+              "url": {"method": "POST", "url": "api/graceful_shutdown_startup/deploy"},
+              "text": "Deploy",
+              "disabled": "hasErrors",
+              "role": "submit",
+              "beforeSend": {
+                "confirm": "Are you sure you want to start the CBIS Graceful Shutdown and Startup execution?"
+              },
+              "onSuccess": {
+                "message": "CBIS Graceful Shutdown and Startup execution Started!"
+              }
+            }
+          ],
+          "showWarning": {
+            "url": {"method": "GET", "url": "api/graceful_shutdown_startup/isActive", "extract":"active"},
+            "expectedReturnValue": true,
+            "message": "Warning: CBIS Graceful Shutdown and Startup process is already running, a new process will override the existing one."
+          }
+        }
+      ]
+    },
+    {
+      "name": "shutdown-log",
+      "type": "log",
+      "display": "Log",
+      "subSections": [
+        {
+          "name": "graceful_shutdown_startup-log",
+          "display": "CBIS Graceful Shutdown and Startup Logs",
+          "url": {"url":"/var/log/cbis/graceful_shutdown_startup.log"}
+        }
+      ]
+    }
+  ]
+}
