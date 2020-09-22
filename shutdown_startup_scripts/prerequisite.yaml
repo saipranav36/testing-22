@@ -36,7 +36,7 @@
     when: '"is synced" not in galera_cluster_sync.stdout'
 
   - name: Check Pacemaker services are started
-    shell: python /usr/share/cbis/utils/files/validate_pcs.py
+    shell: sudo pcs status
     register: pcs_services_running
     changed_when: False
     ignore_errors: yes
